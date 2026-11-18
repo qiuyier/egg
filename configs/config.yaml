@@ -1,0 +1,47 @@
+app:
+  name: egg
+  environment: development
+
+http:
+  address: ":8080"
+  read_header_timeout: 5s
+  read_timeout: 15s
+  write_timeout: 30s
+  idle_timeout: 60s
+  shutdown_timeout: 10s
+  health_timeout: 2s
+  trusted_proxies: []
+  metrics: true
+
+log:
+  level: info
+  format: console
+  color: true
+  stdout: true
+  file: "" # e.g. logs/api.log; file output is always JSON
+  max_size_mb: 100
+  max_backups: 7
+  max_age_days: 14
+  compress: true
+
+cache:
+  driver: otter # otter | redis
+  max_entries: 10000
+  redis_url: "" # or EGG_CACHE_REDIS_URL
+  key_prefix: "egg:"
+  dial_timeout: 3s
+
+database:
+  driver: disabled # disabled | mysql | postgres
+  dsn: "" # or EGG_DATABASE_DSN
+  max_open_conns: 25
+  max_idle_conns: 10
+  conn_max_lifetime: 30m
+  conn_max_idle_time: 5m
+  connect_timeout: 5s
+  slow_threshold: 200ms
+
+tracing:
+  enabled: false
+  endpoint: "" # full OTLP/HTTP traces URL, e.g. http://localhost:4318/v1/traces
+  sample_rate: 1.0

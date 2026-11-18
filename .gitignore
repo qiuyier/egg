@@ -1,0 +1,5 @@
+/bin/
+/logs/
+/configs/local.*
+/.idea/
+.env
