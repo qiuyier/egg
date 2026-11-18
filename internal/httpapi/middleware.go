@@ -81,7 +81,7 @@ func recovery(log *zap.Logger) gin.HandlerFunc {
 				trace.SpanFromContext(c.Request.Context()).RecordError(errors.New("http handler panic"))
 				c.Abort()
 				if !c.Writer.Written() {
-					write(c, http.StatusInternalServerError, "internal_error", "internal server error", nil)
+					Respond(c, http.StatusInternalServerError, "internal_error", "internal server error", nil)
 				}
 			}
 		}()

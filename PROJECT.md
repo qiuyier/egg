@@ -28,7 +28,7 @@ API 使用 `code`、`message`、`request_id` 及可选的 `data`、`trace_id` �
 
 配置优先级从高到低为 `EGG_<SECTION>_<FIELD>` 环境变量、配置文件、内置默认值。文件路径通过 `-config` 或 `EGG_CONFIG` 指定，命令行优先。省略文件路径时使用内置默认值，外加环境变量覆盖。
 
-[完整 YAML 示例](configs/config.yaml)列出所有字段。配置文件支持 `.toml`、`.yaml`、`.yml`、`.json`、`.ini`、`.xml`。各格式使用相同的分组和字段名。时长使用 `250ms`、`5s` 等 Go duration 字符串，零时长写成 `"0s"`。代理地址列表在 INI、XML 和环境变量中以逗号分隔。
+[完整 YAML 示例](configs/config.yaml)列出所有字段。配置文件支持 `.toml`、`.yaml`、`.yml`、`.json`、`.ini`、`.xml`。各格式使用相同的分组和字段名。时长使用 `250ms`、`5s` 等 Go duration 字符串，零时长写成 `"0s"`。列表在 INI、XML 和环境变量中以逗号分隔。
 
 ```ini
 [http]
@@ -48,6 +48,35 @@ trusted_proxies = 127.0.0.1,10.0.0.0/24
 ```
 
 默认以直接连接的 IP 作为客户端地址。部署在反向代理后时，将代理地址或网段填入 `http.trusted_proxies`。示例 YAML 启用了与 API 共用监听地址的 `/metrics`，可通过 `http.metrics=false` 关闭，或在入口代理限制访问。
+
+## HTTP 中间件
+
+`http.max_body_bytes` 默认限制请求体为 1 MiB，`0` 可关闭。已知长度超限会直接返回 HTTP 413。未知长度的请求在读取超限时返回 413，前提是处理器尚未写出响应。字节上限针对整个请求体，含 multipart 表单开销。
+
+CORS 默认关闭。跨域部署时，可以在配置文件中启用并列出完整的 HTTP(S) 来源，包括协议、域名和必要的端口。可用 `allow_methods`、`allow_headers`、`allow_credentials` 和 `expose_headers` 调整策略。
+
+```yaml
+cors:
+  enabled: true
+  allow_origins: ["http://localhost:3000", "https://app.example.com"]
+```
+
+也可用 `EGG_CORS_ENABLED=true` 和 `EGG_CORS_ALLOW_ORIGINS=http://localhost:3000,https://app.example.com` 配置。
+
+在 `cmd/api/options.go` 的 `apiOptions` 中，可以通过 `app.Options.MaxBodyBytesByRoute` 为上传等路由设置独立的上限。键使用完整的 Gin 路由模式，包括 `/api/v1` 前缀和 `:id` 等路径参数。`httpapi.RequestTimeout` 可以挂到单条路由或路由组上。
+
+```go
+opts := app.Options{
+    MaxBodyBytesByRoute: map[string]int64{"/api/v1/uploads": 20 << 20},
+    RegisterV1: func(routes *gin.RouterGroup, _ app.Dependencies) {
+        routes.POST("/uploads", uploadHandler)
+        search := routes.Group("/search", httpapi.RequestTimeout(2*time.Second))
+        search.GET("", searchHandler)
+    },
+}
+```
+
+把 `c.Request.Context()` 传给 SQL、Redis 和下游 HTTP 调用，超时信号才能传给这些操作。处理器在截止时间过后退出且尚未写出响应时，中间件返回 HTTP 504。应用的读写超时仍由 `http.read_timeout` 和 `http.write_timeout` 控制。
 
 ## 日志与链路追踪
 
@@ -107,6 +136,17 @@ EGG_DATABASE_DSN='postgres://egg:egg@127.0.0.1:15432/egg?sslmode=disable' \
 启动入口在 `cmd/api`，依赖装配和生命周期在 `internal/app`，Gin 路由和中间件在 `internal/httpapi`。在 `app.Options.RegisterV1` 中挂载业务路由，框架将选中的 `cache.Adapter` 和 `*gorm.DB` 注入 `app.Dependencies`。框架的中间件和版本前缀自动应用到这些路由。
 
 自定义缓存实现注册到 `cache.Manager`，将它传入 `app.Options.CustomCaches`，并令 `cache.driver` 与注册名一致。内置名称为 `otter` 和 `redis`。自定义适配器的生命周期由注册方管理，若实现 `Ping(context.Context) error`，则参与启动检查和 readiness，应遵守 context 的截止时间。
+
+业务处理器可以用 `httpapi.Respond` 输出统一的状态码、消息、请求 ID 和可选的追踪 ID。
+
+## 容器运行
+
+```bash
+docker build -t local-api .
+docker run --rm -p 127.0.0.1:8080:8080 local-api
+```
+
+镜像默认加载示例配置，以非 root 用户运行。连接容器外的数据库、Redis 或追踪收集器时，通过环境变量传入从容器可访问的地址。使用库存示例时，先按 `INVENTORY.md` 执行数据库迁移。
 
 ## 验证
 

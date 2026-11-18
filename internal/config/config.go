@@ -18,6 +18,7 @@ import (
 type Config struct {
 	App      App      `mapstructure:"app"`
 	HTTP     HTTP     `mapstructure:"http"`
+	CORS     CORS     `mapstructure:"cors"`
 	Log      Log      `mapstructure:"log"`
 	Cache    Cache    `mapstructure:"cache"`
 	Database Database `mapstructure:"database"`
@@ -37,8 +38,37 @@ type HTTP struct {
 	IdleTimeout       time.Duration `mapstructure:"idle_timeout"`
 	ShutdownTimeout   time.Duration `mapstructure:"shutdown_timeout"`
 	HealthTimeout     time.Duration `mapstructure:"health_timeout"`
+	MaxBodyBytes      int64         `mapstructure:"max_body_bytes"`
 	TrustedProxies    []string      `mapstructure:"trusted_proxies"`
 	Metrics           bool          `mapstructure:"metrics"`
+}
+
+type CORS struct {
+	Enabled          bool     `mapstructure:"enabled"`
+	AllowOrigins     []string `mapstructure:"allow_origins"`
+	AllowMethods     []string `mapstructure:"allow_methods"`
+	AllowHeaders     []string `mapstructure:"allow_headers"`
+	AllowCredentials bool     `mapstructure:"allow_credentials"`
+	ExposeHeaders    []string `mapstructure:"expose_headers"`
+}
+
+// Validate checks that enabled CORS uses explicit HTTP(S) origins.
+func (c CORS) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	if len(c.AllowOrigins) == 0 {
+		return errors.New("cors.allow_origins is required when CORS is enabled")
+	}
+	for _, origin := range c.AllowOrigins {
+		u, err := url.Parse(origin)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" ||
+			!strings.HasPrefix(origin, u.Scheme+"://") || u.User != nil || u.Path != "" ||
+			u.RawQuery != "" || u.ForceQuery || strings.ContainsAny(origin, "*#") {
+			return fmt.Errorf("cors.allow_origins entry %q must be an exact HTTP(S) origin without a path, query or fragment", origin)
+		}
+	}
+	return nil
 }
 
 type Log struct {
@@ -85,7 +115,12 @@ func defaults() Config {
 			Address: ":8080", ReadHeaderTimeout: 5 * time.Second,
 			ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second,
 			IdleTimeout: 60 * time.Second, ShutdownTimeout: 10 * time.Second,
-			HealthTimeout: 2 * time.Second,
+			HealthTimeout: 2 * time.Second, MaxBodyBytes: 1 << 20,
+		},
+		CORS: CORS{
+			AllowMethods:  []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
+			AllowHeaders:  []string{"Origin", "Content-Type", "Accept", "Authorization", "X-Request-ID"},
+			ExposeHeaders: []string{"X-Request-ID"},
 		},
 		Log: Log{
 			Level: "info", Format: "console", Color: true, Stdout: true,
@@ -182,6 +217,12 @@ func (c Config) validate() error {
 		c.HTTP.WriteTimeout <= 0 || c.HTTP.IdleTimeout <= 0 ||
 		c.HTTP.ShutdownTimeout <= 0 || c.HTTP.HealthTimeout <= 0 {
 		return errors.New("http timeouts must be positive")
+	}
+	if c.HTTP.MaxBodyBytes < 0 {
+		return errors.New("http.max_body_bytes must be non-negative")
+	}
+	if err := c.CORS.Validate(); err != nil {
+		return err
 	}
 	for _, proxy := range c.HTTP.TrustedProxies {
 		if _, err := netip.ParsePrefix(proxy); err != nil {

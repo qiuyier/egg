@@ -35,10 +35,24 @@ func TestLoadFormatsAndOverrides(t *testing.T) {
 			if cfg.HTTP.Address != ":8081" || cfg.HTTP.ReadTimeout != 7*time.Second || !cfg.HTTP.Metrics {
 				t.Fatalf("file settings were not applied: %+v", cfg.HTTP)
 			}
-			if cfg.App.Environment != "development" || cfg.Cache.Driver != "otter" {
+			if cfg.App.Environment != "development" || cfg.Cache.Driver != "otter" ||
+				cfg.HTTP.MaxBodyBytes != 1<<20 || cfg.CORS.Enabled {
 				t.Fatal("defaults were not preserved")
 			}
 		})
+	}
+}
+
+func TestMiddlewareConfigOverrides(t *testing.T) {
+	t.Setenv("EGG_HTTP_MAX_BODY_BYTES", "0")
+	t.Setenv("EGG_CORS_ALLOW_ORIGINS", "https://frontend.example,http://localhost:3000")
+	cfg, err := Load(writeFixture(t, "yaml", "http:\n  max_body_bytes: 1024\ncors:\n  enabled: true\n  allow_origins: ['https://from-file.example']"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.HTTP.MaxBodyBytes != 0 || !cfg.CORS.Enabled || len(cfg.CORS.AllowOrigins) != 2 ||
+		cfg.CORS.AllowOrigins[0] != "https://frontend.example" || cfg.CORS.AllowOrigins[1] != "http://localhost:3000" {
+		t.Fatalf("middleware config overrides were not applied: %+v, %+v", cfg.HTTP, cfg.CORS)
 	}
 }
 
@@ -51,6 +65,10 @@ func TestLoadRejectsInvalidConfig(t *testing.T) {
 		{"unknown field", "yaml", "http:\n  read_timout: 3s"},
 		{"bare timeout", "json", `{"http":{"read_timeout":5}}`},
 		{"zero timeout", "json", `{"http":{"read_timeout":"0s"}}`},
+		{"negative body limit", "yaml", "http:\n  max_body_bytes: -1"},
+		{"missing CORS origins", "yaml", "cors:\n  enabled: true"},
+		{"wildcard CORS origin", "yaml", "cors:\n  enabled: true\n  allow_origins: ['*']"},
+		{"CORS origin with path", "yaml", "cors:\n  enabled: true\n  allow_origins: ['https://frontend.example/path']"},
 		{"missing dsn", "toml", "[database]\ndriver = 'postgres'"},
 		{"bad sample rate", "ini", "[tracing]\nsample_rate = 1.5"},
 		{"extra yaml document", "yml", "http: {}\n---\nlog: {}"},

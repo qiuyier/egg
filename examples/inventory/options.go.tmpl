@@ -1,0 +1,16 @@
+package main
+
+import (
+	"errors"
+
+	"github.com/qiuyier/egg/internal/app"
+	"github.com/qiuyier/egg/internal/config"
+	"github.com/qiuyier/egg/internal/inventory"
+)
+
+func apiOptions(cfg config.Config) (app.Options, error) {
+	if cfg.Database.Driver != "postgres" {
+		return app.Options{}, errors.New("the inventory example requires PostgreSQL; set EGG_DATABASE_DRIVER=postgres and EGG_DATABASE_DSN")
+	}
+	return app.Options{RegisterV1: inventory.Register}, nil
+}

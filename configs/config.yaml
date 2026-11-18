@@ -10,8 +10,17 @@ http:
   idle_timeout: 60s
   shutdown_timeout: 10s
   health_timeout: 2s
+  max_body_bytes: 1048576 # 1 MiB, 0 disables the limit
   trusted_proxies: []
   metrics: true
+
+cors:
+  enabled: false
+  allow_origins: [] # e.g. ["http://localhost:3000"]
+  allow_methods: [GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS]
+  allow_headers: [Origin, Content-Type, Accept, Authorization, X-Request-ID]
+  allow_credentials: false
+  expose_headers: [X-Request-ID]
 
 log:
   level: info

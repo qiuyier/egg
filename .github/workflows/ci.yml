@@ -1,0 +1,91 @@
+name: CI
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Test the template
+        run: |
+          go test -race ./...
+          go vet ./...
+      - name: Test the generated project and image
+        run: |
+          go build -o "$RUNNER_TEMP/egg" ./cmd/egg
+          "$RUNNER_TEMP/egg" new "$RUNNER_TEMP/minimal-api"
+          cd "$RUNNER_TEMP/minimal-api"
+          go test ./...
+          docker build -t egg-ci-api .
+          container=$(docker run --rm -d -p 127.0.0.1::8080 egg-ci-api)
+          trap 'docker logs "$container"; docker stop "$container"' EXIT
+          address=$(docker port "$container" 8080/tcp)
+          curl -fsS --retry 12 --retry-connrefused "http://$address/readyz"
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: egg
+          POSTGRES_PASSWORD: egg
+          POSTGRES_DB: egg
+        ports: ['15432:5432']
+        options: >-
+          --health-cmd="pg_isready -h 127.0.0.1 -U egg -d egg"
+          --health-interval=2s --health-timeout=3s --health-retries=30
+      redis:
+        image: redis:8.2-alpine
+        ports: ['16379:6379']
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=2s --health-timeout=3s --health-retries=30
+      mysql:
+        image: mysql:8.0.34
+        env:
+          MYSQL_DATABASE: egg
+          MYSQL_USER: egg
+          MYSQL_PASSWORD: egg
+          MYSQL_ROOT_PASSWORD: local-root-password
+        ports: ['13306:3306']
+        options: >-
+          --health-cmd="mysql -h127.0.0.1 -uegg -pegg -e 'SELECT 1'"
+          --health-interval=3s --health-timeout=3s --health-retries=30
+    env:
+      EGG_TEST_POSTGRES_DSN: postgres://egg:egg@127.0.0.1:15432/egg?sslmode=disable
+      EGG_TEST_MYSQL_DSN: egg:egg@tcp(127.0.0.1:13306)/egg?parseTime=true&loc=UTC
+      EGG_TEST_REDIS_URL: redis://127.0.0.1:16379/0
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Test database and cache adapters
+        run: go test -race -count=1 ./internal/database ./pkg/cache
+      - name: Migrate and test a generated inventory API
+        run: |
+          go build -o "$RUNNER_TEMP/egg" ./cmd/egg
+          "$RUNNER_TEMP/egg" new "$RUNNER_TEMP/inventory-ci" -example inventory
+          cd "$RUNNER_TEMP/inventory-ci"
+          go test ./...
+          GOOSE_DRIVER=postgres GOOSE_DBSTRING="$EGG_TEST_POSTGRES_DSN" \
+            go run github.com/pressly/goose/v3/cmd/goose@v3.30.0 -dir migrations up
+          go build -o "$RUNNER_TEMP/inventory-api" ./cmd/api
+          INVENTORY_CI_DATABASE_DRIVER=postgres INVENTORY_CI_DATABASE_DSN="$EGG_TEST_POSTGRES_DSN" \
+            "$RUNNER_TEMP/inventory-api" -config configs/config.yaml >"$RUNNER_TEMP/inventory.log" 2>&1 &
+          api_pid=$!
+          trap 'cat "$RUNNER_TEMP/inventory.log"; kill "$api_pid" 2>/dev/null || true; wait "$api_pid" || true' EXIT
+          curl -fsS --retry 12 --retry-connrefused http://127.0.0.1:8080/readyz
+          bash "$GITHUB_WORKSPACE/.github/scripts/check-inventory.sh" http://127.0.0.1:8080

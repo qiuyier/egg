@@ -18,9 +18,20 @@ const (
 
 var validName = regexp.MustCompile(`^[a-z][a-z0-9]*(-[a-z0-9]+)*$`)
 
+type Options struct {
+	Out     string
+	Module  string
+	Name    string
+	Example string
+}
+
 // Generate creates an API project from the template and returns its absolute path.
 // Pass checkout when generating from a source checkout to keep output outside it.
-func Generate(source fs.FS, checkout, out, module, name string) (_ string, err error) {
+func Generate(source fs.FS, checkout string, options Options) (_ string, err error) {
+	if options.Example != "" && options.Example != "inventory" {
+		return "", fmt.Errorf("unknown example %q (available: inventory)", options.Example)
+	}
+	out, module, name := options.Out, options.Module, options.Name
 	mod, err := fs.ReadFile(source, "go.mod")
 	if err != nil {
 		return "", fmt.Errorf("read template go.mod: %w", err)
@@ -62,10 +73,13 @@ func Generate(source fs.FS, checkout, out, module, name string) (_ string, err e
 	}
 
 	files, goSource := projectReplacements(name, module)
-	for _, file := range []string{".gitignore", "LICENSE", "PROJECT.md", "compose.yaml", "configs/config.yaml", "go.sum"} {
-		if err := copyFile(source, out, file, files[file]); err != nil {
+	for _, file := range []string{".dockerignore", ".gitignore", "Dockerfile", "LICENSE", "compose.yaml", "configs/config.yaml", "go.sum"} {
+		if err := copyFile(source, out, file, file, files[file]); err != nil {
 			return "", err
 		}
+	}
+	if err := copyFile(source, out, "PROJECT.md", "README.md", files["PROJECT.md"]); err != nil {
+		return "", err
 	}
 	for _, folder := range []string{"cmd", "internal", "pkg"} {
 		err := fs.WalkDir(source, folder, func(path string, entry fs.DirEntry, err error) error {
@@ -73,18 +87,54 @@ func Generate(source fs.FS, checkout, out, module, name string) (_ string, err e
 				return err
 			}
 			if entry.IsDir() && (strings.HasPrefix(entry.Name(), ".") || path == "cmd/egg" || path == "internal/scaffold") {
-				return filepath.SkipDir
+				return fs.SkipDir
+			}
+			if path == "internal/inventory" && options.Example == "" {
+				return fs.SkipDir
 			}
 			if !entry.Type().IsRegular() || strings.HasPrefix(entry.Name(), ".") || filepath.Ext(path) != ".go" {
 				return nil
 			}
-			return copyFile(source, out, path, goSource)
+			return copyFile(source, out, path, path, goSource)
 		})
 		if err != nil {
 			return "", err
 		}
 	}
+	if options.Example == "inventory" {
+		if err := copyInventory(source, out, goSource, files["PROJECT.md"]); err != nil {
+			return "", err
+		}
+	}
 	return out, nil
+}
+
+func copyInventory(source fs.FS, out string, goSource, docs *strings.Replacer) error {
+	for _, file := range []struct {
+		source, target string
+		replace        *strings.Replacer
+	}{
+		{"options.go.tmpl", "cmd/api/options.go", goSource},
+		{"openapi.yaml", "openapi.yaml", nil},
+		{"README.md", "INVENTORY.md", docs},
+	} {
+		if err := copyFile(source, out, "examples/inventory/"+file.source, file.target, file.replace); err != nil {
+			return err
+		}
+	}
+	migrations, err := fs.Glob(source, "examples/inventory/migrations/*.sql")
+	if err != nil {
+		return err
+	}
+	if len(migrations) == 0 {
+		return errors.New("inventory example has no SQL migrations")
+	}
+	for _, migration := range migrations {
+		if err := copyFile(source, out, migration, "migrations/"+filepath.Base(migration), nil); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // projectReplacements limits edits to the template's identity-bearing fields.
@@ -147,7 +197,7 @@ func outputPath(checkout, out string) (string, error) {
 	return absolute, nil
 }
 
-func copyFile(source fs.FS, out, file string, replacements *strings.Replacer) error {
+func copyFile(source fs.FS, out, file, destination string, replacements *strings.Replacer) error {
 	info, err := fs.Lstat(source, file)
 	if err != nil {
 		return err
@@ -162,10 +212,7 @@ func copyFile(source fs.FS, out, file string, replacements *strings.Replacer) er
 	if replacements != nil {
 		data = []byte(replacements.Replace(string(data)))
 	}
-	if file == "PROJECT.md" {
-		file = "README.md"
-	}
-	target := filepath.Join(out, filepath.FromSlash(file))
+	target := filepath.Join(out, filepath.FromSlash(destination))
 	if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
 		return err
 	}

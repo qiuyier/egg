@@ -3,13 +3,17 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
+	"maps"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/gin-contrib/cors"
+	"github.com/gin-gonic/gin"
 	"github.com/qiuyier/egg/internal/config"
 	"github.com/qiuyier/egg/internal/telemetry"
-	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
@@ -30,7 +34,18 @@ type response struct {
 	Data      any    `json:"data,omitempty"`
 }
 
-func New(cfg config.Config, log *zap.Logger, provider trace.TracerProvider, checks []Check) (*gin.Engine, error) {
+func New(cfg config.Config, log *zap.Logger, provider trace.TracerProvider, checks []Check, maxBodyBytesByRoute map[string]int64) (*gin.Engine, error) {
+	if err := cfg.CORS.Validate(); err != nil {
+		return nil, err
+	}
+	if cfg.HTTP.MaxBodyBytes < 0 {
+		return nil, fmt.Errorf("http.max_body_bytes must be non-negative")
+	}
+	for route, limit := range maxBodyBytesByRoute {
+		if !strings.HasPrefix(route, "/") || limit < 0 {
+			return nil, fmt.Errorf("body limit for route %q requires an absolute Gin route pattern and a non-negative byte limit", route)
+		}
+	}
 	router := gin.New()
 	router.RedirectTrailingSlash = false
 	router.HandleMethodNotAllowed = true
@@ -53,27 +68,40 @@ func New(cfg config.Config, log *zap.Logger, provider trace.TracerProvider, chec
 		router.Use(metrics)
 	}
 	router.Use(recovery(log))
+	if cfg.CORS.Enabled {
+		corsConfig := cors.DefaultConfig()
+		corsConfig.AllowOrigins = cfg.CORS.AllowOrigins
+		corsConfig.AllowMethods = cfg.CORS.AllowMethods
+		corsConfig.AllowHeaders = cfg.CORS.AllowHeaders
+		corsConfig.AllowCredentials = cfg.CORS.AllowCredentials
+		corsConfig.ExposeHeaders = cfg.CORS.ExposeHeaders
+		router.Use(cors.New(corsConfig))
+	}
+	if cfg.HTTP.MaxBodyBytes > 0 || len(maxBodyBytesByRoute) > 0 {
+		router.Use(limitRequestBody(cfg.HTTP.MaxBodyBytes, maps.Clone(maxBodyBytesByRoute)))
+	}
 	if metricsHandler != nil {
 		router.GET("/metrics", gin.WrapH(metricsHandler))
 	}
 
 	router.GET("/livez", func(c *gin.Context) {
-		write(c, http.StatusOK, "ok", "alive", nil)
+		Respond(c, http.StatusOK, "ok", "alive", nil)
 	})
 	router.GET("/readyz", readiness(cfg.HTTP.HealthTimeout, checks, log))
 	router.Group(V1Prefix).GET("/ping", func(c *gin.Context) {
-		write(c, http.StatusOK, "ok", "pong", gin.H{"service": cfg.App.Name})
+		Respond(c, http.StatusOK, "ok", "pong", gin.H{"service": cfg.App.Name})
 	})
 	router.NoRoute(func(c *gin.Context) {
-		write(c, http.StatusNotFound, "not_found", "route not found", nil)
+		Respond(c, http.StatusNotFound, "not_found", "route not found", nil)
 	})
 	router.NoMethod(func(c *gin.Context) {
-		write(c, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", nil)
+		Respond(c, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", nil)
 	})
 	return router, nil
 }
 
-func write(c *gin.Context, status int, code, message string, data any) {
+// Respond writes the common API payload with request and trace IDs.
+func Respond(c *gin.Context, status int, code, message string, data any) {
 	payload := response{Code: code, Message: message, RequestID: c.GetString(requestIDKey), Data: data}
 	if span := trace.SpanContextFromContext(c.Request.Context()); span.IsValid() {
 		payload.TraceID = span.TraceID().String()
@@ -105,10 +133,10 @@ func readiness(timeout time.Duration, checks []Check, log *zap.Logger) gin.Handl
 		}
 		data := gin.H{"checks": status}
 		if !ready {
-			write(c, http.StatusServiceUnavailable, "not_ready", "dependency unavailable", data)
+			Respond(c, http.StatusServiceUnavailable, "not_ready", "dependency unavailable", data)
 			return
 		}
-		write(c, http.StatusOK, "ok", "ready", data)
+		Respond(c, http.StatusOK, "ok", "ready", data)
 	}
 }
 

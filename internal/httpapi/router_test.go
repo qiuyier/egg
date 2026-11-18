@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qiuyier/egg/internal/config"
 	"github.com/gin-gonic/gin"
+	"github.com/qiuyier/egg/internal/config"
 	"go.uber.org/zap"
 )
 
@@ -25,7 +25,7 @@ func TestRouterResponsesAndMetrics(t *testing.T) {
 			<-ctx.Done()
 			return ctx.Err()
 		},
-	}})
+	}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

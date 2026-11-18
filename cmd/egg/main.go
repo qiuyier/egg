@@ -100,6 +100,7 @@ func newProject(command string, args []string) int {
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	module := flags.String("module", "", "Go module path (defaults to example.com/<name>)")
 	name := flags.String("name", "", "project name (defaults to the output directory name)")
+	example := flags.String("example", "", "include a runnable example (inventory)")
 	flags.Usage = func() {
 		fmt.Fprintf(flags.Output(), "Usage: egg %s <directory> [options]\n", command)
 		flags.PrintDefaults()
@@ -125,12 +126,17 @@ func newProject(command string, args []string) int {
 		return 2
 	}
 
-	out, err := scaffold.Generate(egg.ProjectTemplate(), "", paths[0], *module, *name)
+	out, err := scaffold.Generate(egg.ProjectTemplate(), "", scaffold.Options{
+		Out: paths[0], Module: *module, Name: *name, Example: *example,
+	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "egg:", err)
 		return 1
 	}
 	fmt.Println("Created", out)
+	if *example == "inventory" {
+		fmt.Println("See INVENTORY.md in the new project to run the example.")
+	}
 	return 0
 }
 

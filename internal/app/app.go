@@ -9,13 +9,13 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/qiuyier/egg/internal/config"
 	"github.com/qiuyier/egg/internal/database"
 	"github.com/qiuyier/egg/internal/httpapi"
 	"github.com/qiuyier/egg/internal/logging"
 	"github.com/qiuyier/egg/internal/telemetry"
 	"github.com/qiuyier/egg/pkg/cache"
-	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -37,6 +37,8 @@ type Options struct {
 	// CustomCaches contains caller-owned adapters selected by cache.driver.
 	CustomCaches *cache.Manager
 	RegisterV1   func(*gin.RouterGroup, Dependencies)
+	// MaxBodyBytesByRoute overrides the limit for a full Gin route pattern. Zero disables it on that route.
+	MaxBodyBytesByRoute map[string]int64
 }
 
 func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err error) {
@@ -91,7 +93,7 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 		checks = append(checks, httpapi.Check{Name: "database", Ping: db.Ping})
 	}
 
-	router, err := httpapi.New(cfg, a.log, provider, checks)
+	router, err := httpapi.New(cfg, a.log, provider, checks, options.MaxBodyBytesByRoute)
 	if err != nil {
 		return nil, fmt.Errorf("initialize router: %w", err)
 	}

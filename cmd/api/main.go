@@ -9,10 +9,10 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/gin-gonic/gin"
 	"github.com/qiuyier/egg/internal/app"
 	"github.com/qiuyier/egg/internal/config"
 	"github.com/qiuyier/egg/internal/logging"
-	"github.com/gin-gonic/gin"
 )
 
 func main() {
@@ -29,12 +29,16 @@ func run(path string) (err error) {
 	if err != nil {
 		return err
 	}
+	options, err := apiOptions(cfg)
+	if err != nil {
+		return err
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	gin.SetMode(gin.ReleaseMode)
 	logging.PrintStartupBanner(cfg.Log)
-	service, err := app.New(ctx, cfg, app.Options{})
+	service, err := app.New(ctx, cfg, options)
 	if err != nil {
 		return err
 	}
