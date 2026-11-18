@@ -62,7 +62,7 @@ func Generate(source fs.FS, checkout, out, module, name string) (_ string, err e
 	}
 
 	files, goSource := projectReplacements(name, module)
-	for _, file := range []string{".gitignore", "PROJECT.md", "compose.yaml", "configs/config.yaml", "go.sum"} {
+	for _, file := range []string{".gitignore", "LICENSE", "PROJECT.md", "compose.yaml", "configs/config.yaml", "go.sum"} {
 		if err := copyFile(source, out, file, files[file]); err != nil {
 			return "", err
 		}

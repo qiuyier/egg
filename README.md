@@ -48,3 +48,7 @@ go run ./tools/new-project -out ../inventory-api -module github.com/your-org/inv
 每次生成都是一份独立源码。生成器复制框架代码、测试、锁定依赖和示例配置。Git 历史、`.env`、本地配置和日志保留在各自目录。需要版本管理时，在新项目目录运行 `git init`。
 
 新项目的 `README.md` 说明如何运行 API、切换 Redis 和数据库以及接入业务路由。修改本地模板后，在仓库根目录运行 `go install ./cmd/egg`，后续生成的项目会使用更新后的模板。已有项目可以按需单独合并框架更新。
+
+## 许可证
+
+本项目采用 [Apache License 2.0](LICENSE)。

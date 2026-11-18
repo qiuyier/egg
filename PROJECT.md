@@ -125,3 +125,7 @@ EGG_TEST_POSTGRES_DSN='postgres://egg:egg@127.0.0.1:15432/egg?sslmode=disable' \
 ```
 
 停止本地依赖可执行 `docker compose down`。
+
+## 许可证
+
+模板代码采用 [Apache License 2.0](LICENSE)。
