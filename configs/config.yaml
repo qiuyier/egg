@@ -48,7 +48,7 @@ database:
   conn_max_lifetime: 30m
   conn_max_idle_time: 5m
   connect_timeout: 5s
-  slow_threshold: 200ms
+  slow_threshold: 200ms # passed to the optional GORM adapter
 
 tracing:
   enabled: false

@@ -1,6 +1,8 @@
 package inventory
 
 import (
+	"context"
+	"database/sql"
 	"errors"
 	"math"
 	"net/http"
@@ -10,24 +12,21 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jmoiron/sqlx"
 	"github.com/qiuyier/egg/internal/app"
 	"github.com/qiuyier/egg/internal/httpapi"
-	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 var errStockOutOfRange = errors.New("stock out of range")
 
 type item struct {
-	ID    int64  `json:"id"`
-	SKU   string `json:"sku"`
-	Name  string `json:"name"`
-	Stock int64  `json:"stock"`
+	ID    int64  `db:"id" json:"id"`
+	SKU   string `db:"sku" json:"sku"`
+	Name  string `db:"name" json:"name"`
+	Stock int64  `db:"stock" json:"stock"`
 }
 
-func (item) TableName() string { return "inventory_items" }
-
-type handler struct{ db *gorm.DB }
+type handler struct{ db *sqlx.DB }
 
 // Register mounts the inventory example under the caller's v1 group.
 func Register(routes *gin.RouterGroup, deps app.Dependencies) {
@@ -53,8 +52,10 @@ func (h handler) create(c *gin.Context) {
 		httpapi.Respond(c, http.StatusBadRequest, "invalid_item", "sku and name are required and may be at most 64 and 200 characters", nil)
 		return
 	}
-	created := item{SKU: sku, Name: name}
-	if err := h.db.WithContext(c.Request.Context()).Create(&created).Error; err != nil {
+	var created item
+	if err := h.db.GetContext(c.Request.Context(), &created, `
+		INSERT INTO inventory_items (sku, name) VALUES ($1, $2)
+		RETURNING id, sku, name, stock`, sku, name); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "inventory_items_sku_unique" {
 			httpapi.Respond(c, http.StatusConflict, "duplicate_sku", "sku already exists", nil)
@@ -74,8 +75,9 @@ func (h handler) list(c *gin.Context) {
 		return
 	}
 	items := make([]item, 0)
-	if err := h.db.WithContext(c.Request.Context()).Order("id").
-		Limit(perPage).Offset((page - 1) * perPage).Find(&items).Error; err != nil {
+	if err := h.db.SelectContext(c.Request.Context(), &items, `
+		SELECT id, sku, name, stock FROM inventory_items
+		ORDER BY id LIMIT $1 OFFSET $2`, perPage, (page-1)*perPage); err != nil {
 		httpapi.Respond(c, http.StatusInternalServerError, "internal_error", "could not list items", nil)
 		return
 	}
@@ -95,18 +97,9 @@ func (h handler) adjustStock(c *gin.Context) {
 		httpapi.Respond(c, http.StatusBadRequest, "invalid_delta", "delta must be a nonzero integer", nil)
 		return
 	}
-	var updated item
-	err = h.db.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&updated, id).Error; err != nil {
-			return err
-		}
-		if req.Delta < -updated.Stock || req.Delta > math.MaxInt64-updated.Stock {
-			return errStockOutOfRange
-		}
-		return tx.Model(&updated).Update("stock", updated.Stock+req.Delta).Error
-	})
+	updated, err := h.changeStock(c.Request.Context(), id, req.Delta)
 	switch {
-	case errors.Is(err, gorm.ErrRecordNotFound):
+	case errors.Is(err, sql.ErrNoRows):
 		httpapi.Respond(c, http.StatusNotFound, "item_not_found", "item not found", nil)
 	case errors.Is(err, errStockOutOfRange):
 		httpapi.Respond(c, http.StatusConflict, "stock_out_of_range", "adjustment would make stock negative or exceed its maximum", nil)
@@ -115,4 +108,29 @@ func (h handler) adjustStock(c *gin.Context) {
 	default:
 		httpapi.Respond(c, http.StatusOK, "ok", "stock adjusted", updated)
 	}
+}
+
+func (h handler) changeStock(ctx context.Context, id, delta int64) (item, error) {
+	tx, err := h.db.BeginTxx(ctx, nil)
+	if err != nil {
+		return item{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var updated item
+	if err := tx.GetContext(ctx, &updated, `
+		SELECT id, sku, name, stock FROM inventory_items WHERE id = $1 FOR UPDATE`, id); err != nil {
+		return item{}, err
+	}
+	if delta < -updated.Stock || delta > math.MaxInt64-updated.Stock {
+		return item{}, errStockOutOfRange
+	}
+	updated.Stock += delta
+	if _, err := tx.ExecContext(ctx, `UPDATE inventory_items SET stock = $1 WHERE id = $2`, updated.Stock, id); err != nil {
+		return item{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return item{}, err
+	}
+	return updated, nil
 }

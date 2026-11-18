@@ -98,7 +98,7 @@ EGG_TRACING_SAMPLE_RATE=0.25 \
   go run ./cmd/api -config configs/config.yaml
 ```
 
-省略 `tracing.endpoint` 时使用 OpenTelemetry 的 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` 等标准配置。业务处理器将 `c.Request.Context()` 传给缓存，以及 `db.WithContext(ctx)`，可把 Redis 和 SQL 操作纳入当前 HTTP trace。追踪默认省略 SQL 查询文本和 Redis 命令内容。进程收到 SIGINT 或 SIGTERM 后先等待 HTTP 请求结束，再关闭缓存、数据库连接池和导出器，刷新待发送的 span。
+省略 `tracing.endpoint` 时使用 OpenTelemetry 的 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` 等标准配置。业务处理器将 `c.Request.Context()` 传给缓存和 sqlx 的 `GetContext`、`SelectContext`、`ExecContext` 或 `BeginTxx`，可把 Redis 和 SQL 操作纳入当前 HTTP trace。追踪默认省略 SQL 查询文本和 Redis 命令内容。进程收到 SIGINT 或 SIGTERM 后先等待 HTTP 请求结束，再关闭缓存、数据库连接池和导出器，刷新待发送的 span。
 
 ## 切换缓存和数据库
 
@@ -128,12 +128,14 @@ EGG_DATABASE_DSN='postgres://egg:egg@127.0.0.1:15432/egg?sslmode=disable' \
 ```
 
 - `pkg/cache.Adapter` 提供带 context 的 `Get`、`Set`、`Delete`。未命中返回 `cache.ErrMiss`，TTL 为零表示无到期时间，仍可能受容量淘汰。Otter 限制进程内条目数量。Redis 使用单节点 `redis://` 或 `rediss://` 连接，按 `cache.key_prefix` 隔离键。
-- 数据库用 GORM 暴露统一入口，驱动为 `mysql`（MySQL 8）或 `postgres`。连接池、启动探测超时和慢查询阈值可配置。数据库关闭时，传给业务路由的 `DB` 为 nil。手写 SQL 和迁移仍需考虑两个数据库的方言差异。
+- 数据库默认通过 sqlx 暴露 `*sqlx.DB`，支持 `mysql`（MySQL 8）和 `postgres`（通过 pgx）。连接池和启动探测超时可配置。数据库关闭时，传给业务路由的 `DB` 为 nil。`Rebind` 可转换占位符，查询语法和迁移仍遵循目标数据库的方言。接入其他数据库需要为 Egg 添加相应的 `database/sql` 驱动和连接初始化。
 - Compose 中的账号、口令和关闭 TLS 的 DSN 仅用于本地开发。实际连接凭据通过环境变量注入。
 
 ## 接入业务
 
-启动入口在 `cmd/api`，依赖装配和生命周期在 `internal/app`，Gin 路由和中间件在 `internal/httpapi`。在 `app.Options.RegisterV1` 中挂载业务路由，框架将选中的 `cache.Adapter` 和 `*gorm.DB` 注入 `app.Dependencies`。框架的中间件和版本前缀自动应用到这些路由。
+启动入口在 `cmd/api`，依赖装配和生命周期在 `internal/app`，Gin 路由和中间件在 `internal/httpapi`。在 `app.Options.RegisterV1` 中挂载业务路由，框架将选中的 `cache.Adapter` 和 `*sqlx.DB` 注入 `app.Dependencies`。框架的中间件和版本前缀自动应用到这些路由。
+
+需要 GORM 的项目，可以在初始化业务路由时导入 `internal/database/gormadapter`，调用 `gormadapter.Open(deps.DB, cfg.Database.SlowThreshold, nil)` 获取 `*gorm.DB`。这个适配器复用框架的连接池和 SQL 追踪。第三个参数可以传日志记录器，`nil` 使用标准日志。连接池由框架关闭。
 
 自定义缓存实现注册到 `cache.Manager`，将它传入 `app.Options.CustomCaches`，并令 `cache.driver` 与注册名一致。内置名称为 `otter` 和 `redis`。自定义适配器的生命周期由注册方管理，若实现 `Ping(context.Context) error`，则参与启动检查和 readiness，应遵守 context 的截止时间。
 

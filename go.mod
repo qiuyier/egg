@@ -9,6 +9,7 @@ require (
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/go-viper/mapstructure/v2 v2.5.0
 	github.com/jackc/pgx/v5 v5.10.0
+	github.com/jmoiron/sqlx v1.4.0
 	github.com/mattn/go-isatty v0.0.24
 	github.com/maypok86/otter/v2 v2.4.0
 	github.com/pelletier/go-toml/v2 v2.4.3

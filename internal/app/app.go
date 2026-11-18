@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jmoiron/sqlx"
 	"github.com/qiuyier/egg/internal/config"
 	"github.com/qiuyier/egg/internal/database"
 	"github.com/qiuyier/egg/internal/httpapi"
@@ -18,7 +19,6 @@ import (
 	"github.com/qiuyier/egg/pkg/cache"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
-	"gorm.io/gorm"
 )
 
 type App struct {
@@ -30,7 +30,7 @@ type App struct {
 
 type Dependencies struct {
 	Cache cache.Adapter
-	DB    *gorm.DB
+	DB    *sqlx.DB
 }
 
 type Options struct {
@@ -83,14 +83,14 @@ func New(ctx context.Context, cfg config.Config, options Options) (_ *App, err e
 		checks = append(checks, httpapi.Check{Name: "cache", Ping: remote.Ping})
 	}
 
-	db, err := database.Open(ctx, cfg.Database, a.log, provider)
+	db, err := database.Open(ctx, cfg.Database, provider)
 	if err != nil {
 		return nil, fmt.Errorf("initialize database: %w", err)
 	}
 	if db != nil {
-		deps.DB = db.ORM
+		deps.DB = db
 		a.cleanup = append(a.cleanup, func(context.Context) error { return db.Close() })
-		checks = append(checks, httpapi.Check{Name: "database", Ping: db.Ping})
+		checks = append(checks, httpapi.Check{Name: "database", Ping: db.PingContext})
 	}
 
 	router, err := httpapi.New(cfg, a.log, provider, checks, options.MaxBodyBytesByRoute)

@@ -1,6 +1,6 @@
 # 库存 API 示例
 
-在 `egg new <目录> -example inventory` 生成的项目中执行下面的命令。示例使用 PostgreSQL，新增商品时库存为零，同一 SKU 只能创建一次。
+在 `egg new <目录> -example inventory` 生成的项目中执行下面的命令。示例使用 sqlx 执行 PostgreSQL 查询，新增商品时库存为零，同一 SKU 只能创建一次。
 
 ## 迁移并启动
 

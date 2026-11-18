@@ -3,14 +3,15 @@ package database
 import (
 	"context"
 	"os"
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/XSAM/otelsql"
 	"github.com/qiuyier/egg/internal/config"
+	"github.com/qiuyier/egg/internal/database/gormadapter"
 	"go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
-	"go.uber.org/zap"
-	"gorm.io/gorm"
 )
 
 func TestDatabaseDrivers(t *testing.T) {
@@ -27,8 +28,8 @@ func TestDatabaseDrivers(t *testing.T) {
 			t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 			db, err := Open(t.Context(), config.Database{
 				Driver: driver, DSN: dsn, ConnectTimeout: 5 * time.Second,
-				MaxOpenConns: 3, MaxIdleConns: 2, SlowThreshold: time.Second,
-			}, zap.NewNop(), provider)
+				MaxOpenConns: 3, MaxIdleConns: 2,
+			}, provider)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -36,25 +37,46 @@ func TestDatabaseDrivers(t *testing.T) {
 
 			ctx, parent := provider.Tracer("test").Start(t.Context(), "database test")
 			defer parent.End()
-			err = db.ORM.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-				var value int
-				if err := tx.Raw("SELECT 1 + ?", 41).Scan(&value).Error; err != nil {
-					return err
-				}
-				if value != 42 {
-					t.Errorf("expected 42, got %d", value)
-				}
-				return nil
-			})
+			tx, err := db.BeginTxx(ctx, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, span := range spans.Ended() {
-				if span.Parent().SpanID() == parent.SpanContext().SpanID() {
-					return
-				}
+			defer func() { _ = tx.Rollback() }()
+			query, args, err := tx.BindNamed("SELECT 1 + :base AS result", map[string]any{"base": 41})
+			if err != nil {
+				t.Fatal(err)
 			}
-			t.Fatal("expected a SQL span under the calling span")
+			var row struct {
+				Result int `db:"result"`
+			}
+			if err := tx.GetContext(ctx, &row, query, args...); err != nil || row.Result != 42 {
+				t.Fatalf("expected SQLx result 42, got %d: %v", row.Result, err)
+			}
+			if err := tx.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.ContainsFunc(spans.Ended(), func(span trace.ReadOnlySpan) bool {
+				method := otelsql.Method(span.Name())
+				return span.Parent().SpanID() == parent.SpanContext().SpanID() &&
+					(method == otelsql.MethodConnQuery || method == otelsql.MethodStmtQuery)
+			}) {
+				t.Fatal("expected a SQL query span under the calling span")
+			}
+
+			t.Run("gorm shares pool", func(t *testing.T) {
+				orm, err := gormadapter.Open(db, time.Second, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				pool, err := orm.DB()
+				if err != nil || pool != db.DB {
+					t.Fatalf("GORM did not reuse the sqlx pool: %v", err)
+				}
+				var value int
+				if err := orm.WithContext(ctx).Raw("SELECT 1 + ?", 41).Scan(&value).Error; err != nil || value != 42 {
+					t.Fatalf("expected GORM result 42, got %d: %v", value, err)
+				}
+			})
 		})
 	}
 }
